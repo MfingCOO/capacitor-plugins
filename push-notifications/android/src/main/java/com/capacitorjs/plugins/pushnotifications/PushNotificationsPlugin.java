@@ -11,6 +11,8 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.service.notification.StatusBarNotification;
+import android.util.Log;
+
 import com.getcapacitor.*;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
@@ -19,6 +21,7 @@ import com.google.firebase.messaging.CommonNotificationBuilder;
 import com.google.firebase.messaging.FirebaseMessaging;
 import com.google.firebase.messaging.NotificationParams;
 import com.google.firebase.messaging.RemoteMessage;
+
 import java.util.Arrays;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -30,9 +33,9 @@ import org.json.JSONObject;
 public class PushNotificationsPlugin extends Plugin {
 
     static final String PUSH_NOTIFICATIONS = "receive";
-
     public static Bridge staticBridge = null;
     public static RemoteMessage lastMessage = null;
+
     public NotificationManager notificationManager;
     public MessagingService firebaseMessagingService;
     private NotificationChannelManager notificationChannelManager;
@@ -40,41 +43,74 @@ public class PushNotificationsPlugin extends Plugin {
     private static final String EVENT_TOKEN_CHANGE = "registration";
     private static final String EVENT_TOKEN_ERROR = "registrationError";
 
+    @Override
     public void load() {
         notificationManager = (NotificationManager) getActivity().getSystemService(Context.NOTIFICATION_SERVICE);
         firebaseMessagingService = new MessagingService();
-
         staticBridge = this.bridge;
         if (lastMessage != null) {
             fireNotification(lastMessage);
             lastMessage = null;
         }
-
         notificationChannelManager = new NotificationChannelManager(getActivity(), notificationManager, getConfig());
     }
 
     @Override
-    protected void handleOnNewIntent(Intent data) {
-        super.handleOnNewIntent(data);
-        Bundle bundle = data.getExtras();
-        if (bundle != null && bundle.containsKey("google.message_id")) {
-            JSObject notificationJson = new JSObject();
-            JSObject dataObject = new JSObject();
-            for (String key : bundle.keySet()) {
-                if (key.equals("google.message_id")) {
-                    notificationJson.put("id", bundle.getString(key));
-                } else {
-                    dataObject.put(key, bundle.get(key));
-                }
-            }
-            notificationJson.put("data", dataObject);
-            JSObject actionJson = new JSObject();
-            actionJson.put("actionId", "tap");
-            actionJson.put("notification", notificationJson);
-            notifyListeners("pushNotificationActionPerformed", actionJson, true);
+    protected void handleOnNewIntent(Intent intent) {
+        super.handleOnNewIntent(intent);
+
+        Log.d("PushNotifications", "=== CUSTOM V999 ACTIVE - handleOnNewIntent START ===");
+
+        Bundle bundle = intent.getExtras();
+        if (bundle == null || !bundle.containsKey("google.message_id")) {
+            Log.w("PushNotifications", "No google.message_id in extras");
+            return;
         }
+
+        JSObject notificationJson = new JSObject();
+        JSObject dataObject = new JSObject();
+
+        String messageId = bundle.getString("google.message_id");
+        if (messageId != null) {
+            notificationJson.put("id", messageId);
+        }
+
+        for (String key : bundle.keySet()) {
+            Object value = bundle.get(key);
+            if (value == null) continue;
+
+            try {
+                if (value instanceof String) {
+                    dataObject.put(key, (String) value);
+                } else if (value instanceof Long) {
+                    dataObject.put(key, value.toString());
+                } else if (value instanceof Integer) {
+                    dataObject.put(key, value.toString());
+                } else if (value instanceof Boolean) {
+                    dataObject.put(key, (Boolean) value);
+                } else if (value instanceof Bundle) {
+                    Log.d("PushNotifications", "Skipped nested Bundle key: " + key);
+                } else {
+                    Log.w("PushNotifications", "Unsupported type for key: " + key + " (" + value.getClass().getName() + ")");
+                    dataObject.put(key, value.toString());
+                }
+            } catch (Exception e) {
+                Log.e("PushNotifications", "Parse error on key: " + key, e);
+            }
+        }
+
+        notificationJson.put("data", dataObject);
+
+        JSObject actionJson = new JSObject();
+        actionJson.put("actionId", "tap");
+        actionJson.put("notification", notificationJson);
+
+        notifyListeners("pushNotificationActionPerformed", actionJson, true);
+
+        Log.d("PushNotifications", "=== CUSTOM V999 ACTIVE - SUCCESS - event fired ===");
     }
 
+    // All other methods below are the original ones (required for compile)
     @PluginMethod
     public void checkPermissions(PluginCall call) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
@@ -101,14 +137,14 @@ public class PushNotificationsPlugin extends Plugin {
     public void register(PluginCall call) {
         FirebaseMessaging.getInstance().setAutoInitEnabled(true);
         FirebaseMessaging.getInstance()
-            .getToken()
-            .addOnCompleteListener((task) -> {
-                if (!task.isSuccessful()) {
-                    sendError(task.getException().getLocalizedMessage());
-                    return;
-                }
-                sendToken(task.getResult());
-            });
+                .getToken()
+                .addOnCompleteListener(task -> {
+                    if (!task.isSuccessful()) {
+                        sendError(task.getException().getLocalizedMessage());
+                        return;
+                    }
+                    sendToken(task.getResult());
+                });
         call.resolve();
     }
 
@@ -123,32 +159,24 @@ public class PushNotificationsPlugin extends Plugin {
     public void getDeliveredNotifications(PluginCall call) {
         JSArray notifications = new JSArray();
         StatusBarNotification[] activeNotifications = notificationManager.getActiveNotifications();
-
         for (StatusBarNotification notif : activeNotifications) {
             JSObject jsNotif = new JSObject();
-
             jsNotif.put("id", notif.getId());
             jsNotif.put("tag", notif.getTag());
-
             Notification notification = notif.getNotification();
             if (notification != null) {
                 jsNotif.put("title", notification.extras.getCharSequence(Notification.EXTRA_TITLE));
                 jsNotif.put("body", notification.extras.getCharSequence(Notification.EXTRA_TEXT));
                 jsNotif.put("group", notification.getGroup());
                 jsNotif.put("groupSummary", 0 != (notification.flags & Notification.FLAG_GROUP_SUMMARY));
-
                 JSObject extras = new JSObject();
-
                 for (String key : notification.extras.keySet()) {
                     extras.put(key, notification.extras.get(key));
                 }
-
                 jsNotif.put("data", extras);
             }
-
             notifications.put(jsNotif);
         }
-
         JSObject result = new JSObject();
         result.put("notifications", notifications);
         call.resolve(result);
@@ -157,14 +185,12 @@ public class PushNotificationsPlugin extends Plugin {
     @PluginMethod
     public void removeDeliveredNotifications(PluginCall call) {
         JSArray notifications = call.getArray("notifications");
-
         try {
             for (Object o : notifications.toList()) {
                 if (o instanceof JSONObject) {
                     JSObject notif = JSObject.fromJSONObject((JSONObject) o);
                     String tag = notif.getString("tag");
                     Integer id = notif.getInteger("id");
-
                     if (tag == null) {
                         notificationManager.cancel(id);
                     } else {
@@ -177,7 +203,6 @@ public class PushNotificationsPlugin extends Plugin {
         } catch (JSONException e) {
             call.reject(e.getMessage());
         }
-
         call.resolve();
     }
 
@@ -232,9 +257,9 @@ public class PushNotificationsPlugin extends Plugin {
 
     public void fireNotification(RemoteMessage remoteMessage) {
         JSObject remoteMessageData = new JSObject();
-
         JSObject data = new JSObject();
         remoteMessageData.put("id", remoteMessage.getMessageId());
+
         for (String key : remoteMessage.getData().keySet()) {
             Object value = remoteMessage.getData().get(key);
             data.put(key, value);
@@ -246,17 +271,18 @@ public class PushNotificationsPlugin extends Plugin {
             String title = notification.getTitle();
             String body = notification.getBody();
             String[] presentation = getConfig().getArray("presentationOptions");
+
             if (presentation != null) {
                 if (Arrays.asList(presentation).contains("alert")) {
                     Bundle bundle = null;
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                         try {
                             ApplicationInfo applicationInfo = getContext()
-                                .getPackageManager()
-                                .getApplicationInfo(
-                                    getContext().getPackageName(),
-                                    PackageManager.ApplicationInfoFlags.of(PackageManager.GET_META_DATA)
-                                );
+                                    .getPackageManager()
+                                    .getApplicationInfo(
+                                            getContext().getPackageName(),
+                                            PackageManager.ApplicationInfoFlags.of(PackageManager.GET_META_DATA)
+                                    );
                             bundle = applicationInfo.metaData;
                         } catch (PackageManager.NameNotFoundException e) {
                             e.printStackTrace();
@@ -267,20 +293,24 @@ public class PushNotificationsPlugin extends Plugin {
 
                     if (bundle != null) {
                         NotificationParams params = new NotificationParams(remoteMessage.toIntent().getExtras());
-
                         String channelId = CommonNotificationBuilder.getOrCreateChannel(
-                            getContext(),
-                            params.getNotificationChannelId(),
-                            bundle
+                                getContext(),
+                                params.getNotificationChannelId(),
+                                bundle
                         );
-
                         CommonNotificationBuilder.DisplayNotificationInfo notificationInfo =
-                            CommonNotificationBuilder.createNotificationInfo(getContext(), getContext(), params, channelId, bundle);
-
+                                CommonNotificationBuilder.createNotificationInfo(
+                                        getContext(),
+                                        getContext(),
+                                        params,
+                                        channelId,
+                                        bundle
+                                );
                         notificationManager.notify(notificationInfo.tag, notificationInfo.id, notificationInfo.notificationBuilder.build());
                     }
                 }
             }
+
             remoteMessageData.put("title", title);
             remoteMessageData.put("body", body);
             remoteMessageData.put("click_action", notification.getClickAction());
@@ -314,8 +344,8 @@ public class PushNotificationsPlugin extends Plugin {
     private Bundle getBundleLegacy() {
         try {
             ApplicationInfo applicationInfo = getContext()
-                .getPackageManager()
-                .getApplicationInfo(getContext().getPackageName(), PackageManager.GET_META_DATA);
+                    .getPackageManager()
+                    .getApplicationInfo(getContext().getPackageName(), PackageManager.GET_META_DATA);
             return applicationInfo.metaData;
         } catch (PackageManager.NameNotFoundException e) {
             e.printStackTrace();
